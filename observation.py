@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[3]:
-
-
 import sys
 from pyspark.sql import SparkSession, functions, types
 import matplotlib.pyplot as plt
@@ -15,11 +9,13 @@ from datetime import datetime
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from pykalman import KalmanFilter
 from pyspark.sql import Row
-from pyspark.sql.functions import col, unix_timestamp, round
-from pyspark.sql.functions import lit
+from pyspark.sql.functions import col, unix_timestamp, round, lit
 import itertools
 from scipy import stats
 from scipy.stats import mannwhitneyu
+
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
 
 spark = SparkSession.builder.appName('first Spark app').getOrCreate()
 spark.sparkContext.setLogLevel('WARN')
@@ -117,7 +113,6 @@ schema = types.StructType([
 ])
 
 
-# In[ ]:
 def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
@@ -140,7 +135,7 @@ def get_data(data):
 
 
 def organize_by_ping(data):
-    grouped = data.groupBy(data['Src IP'],data['Dst IP'])
+    grouped = data.groupBy(data['Src IP'],data['Dst IP'], data['Label'])
     groups = grouped.agg(
         functions.sum(data['Flow Duration']).alias('Flow Duration Sum'),
         (functions.sum(data['Flow Duration'])/functions.count('*')).alias('Flow Duration Avg'),
@@ -150,36 +145,24 @@ def organize_by_ping(data):
         (functions.sum(data['Tot Bwd Pkts'])*functions.count('*')).alias('Tot Bwd Pkts avg'),
         (functions.sum(data['Idle Mean'])).alias('Idle avg'),
         (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('Flow Byts/s'),
+        (functions.sum(data['Flow Byts/s'])).alias('Flow Byts/s avg'),
         functions.count('*').alias('ping'))
     return groups
-    # We know groups has <=10 rows, so it can safely be moved into two partitions.
-    #groups = groups.sort(groups['bin']).coalesce(2)
-# In[ ]:
-def t_test(data_1,data_2):
-    return stats.ttest_ind(data_1, data_2)
 
-def generate_graphs(ddos_organized,benign_organized):
-    fruits = ["Src IP", "Dst IP", "Flow Duration Sum","Flow Duration Avg","Tot Fwd Pkts sum","Tot Bwd Pkts sum","Tot Fwd Pkts avg","Tot Bwd Pkts avg","Idle avg","Flow Byts/s"]
-    outter = 0
-    inner = 0
-    for x in fruits:
-        inner = outter+1
-        fruits.pop(0)
-        for y in fruits:
-            X_ddos=ddos_organized.rdd.map(lambda x: x[outter]).collect() # Pings
-            Y_ddos=ddos_organized.rdd.map(lambda x: x[inner]).collect() # Total time
 
-            X_benign=benign_organized.rdd.map(lambda x: x[outter]).collect() # Pings
-            Y_benign=benign_organized.rdd.map(lambda x: x[inner]).collect() # Total time
-            fig = plt.figure()
-            ax1 = fig.add_subplot(111)
-            ax1.set_xlabel(x)
-            ax1.set_ylabel(y)
-            ax1.scatter(X_ddos, Y_ddos, s=10, c='r', marker="s", label='DDOS')
-            ax1.scatter(X_benign,Y_benign, s=10, c='b', marker="o", label='benign')
-            plt.legend(loc='upper left')
-            plt.savefig(str(x)+' vs '+str(y)+'.png')
-        outter+=1  
+def get_feature_scores(df1, df2, X_first, X_second, Y):
+
+    x1 = df1.select(X_first).rdd.flatMap(lambda x: x).collect() + df2.select(X_first).rdd.flatMap(lambda x: x).collect()
+    x2 = df1.select(X_second).rdd.flatMap(lambda x: x).collect() + df1.select(X_second).rdd.flatMap(lambda x: x).collect()
+    y = df1.select(Y).rdd.flatMap(lambda x: x).collect() + df2.select(Y).rdd.flatMap(lambda x: x).collect()
+    x = np.stack([x1, x2], axis=1)
+    
+    X_train, X_valid, y_train, y_valid = train_test_split(x, y)
+    model = KNeighborsClassifier(n_neighbors=5)
+    model.fit(X_train, y_train)
+    print(model.score(X_train, y_train))
+    print(model.score(X_valid, y_valid))
+
 
 def main(in_directory, out_directory):
     # Read the data from the JSON files
@@ -189,48 +172,15 @@ def main(in_directory, out_directory):
     benign = raw_filtered.filter(raw.Label!="ddos")
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
-    
-    generate_graphs(ddos_organized,benign_organized)
-    #benign_organized.show()
-    
-    #ddos_organized.show()
-    #benign_organized.show()
-    
-    
-    
-#     X_ddos=ddos_organized.rdd.map(lambda x: x[3]).collect() # Pings
-#     Y_ddos=ddos_organized.rdd.map(lambda x: x[8]).collect() # Total time
-    
-#     X_benign=benign_organized.rdd.map(lambda x: x[3]).collect() # Pings
-#     Y_benign=benign_organized.rdd.map(lambda x: x[8]).collect() # Total time
-    
-    
-#     fig = plt.figure()
-#     ax1 = fig.add_subplot(111)
-#     ax1.set_xlabel("Flow Duration")
-#     ax1.set_ylabel("Flow Byts/s")
 
-#     ax1.scatter(X_ddos, Y_ddos, s=10, c='r', marker="s", label='DDOS')
-#     ax1.scatter(X_benign,Y_benign, s=10, c='b', marker="o", label='benign')
-#     plt.legend(loc='upper left')
-#     plt.savefig('combined Tot Fwd Pkts vs Tot Bwd Pkts Benign.png')
+    raw_orgranized = organize_by_ping(raw_filtered)
+
+    size_ddos = ddos_organized.count()
+    limited_bening = benign_organized.limit(size_ddos)
+
+    get_feature_scores(limited_bening, ddos_organized, 'Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
     
-    #plt.show()
-
-  #     print("t-test: btn Pings")
-#     print(t_test(X_ddos,X_benign))
-    
-#     print("t-test: btn Total time")
-#     print(t_test(Y_ddos,Y_benign))
-    #groups = groups.sort(groups['bin']).coalesce(2)
-    #groups.write.csv(out_directory, compression=None, mode='overwrite')
-
-
-# In[ ]:
-
-
 if __name__=='__main__':
     in_directory = sys.argv[1]
     out_directory = sys.argv[2]
     main(in_directory, out_directory)
-
