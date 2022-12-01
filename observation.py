@@ -3,6 +3,7 @@
 
 # In[3]:
 
+# time spark-submit --master=local[1] observation.py datatset/unbalanced output/predictions.csv
 
 import sys
 from pyspark.sql import SparkSession, functions, types
@@ -20,6 +21,12 @@ from pyspark.sql.functions import lit
 import itertools
 from scipy import stats
 from scipy.stats import mannwhitneyu
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.neighbors import KNeighborsClassifier
+
+
 
 spark = SparkSession.builder.appName('first Spark app').getOrCreate()
 spark.sparkContext.setLogLevel('WARN')
@@ -116,13 +123,17 @@ schema = types.StructType([
     types.StructField('Label', types.StringType())
 ])
 
-
+output_schema = types.StructType([
+    types.StructField('Real', types.StringType()),
+    types.StructField('prediction', types.StringType())
+])
 # In[ ]:
 def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
 def get_data(data):
     return data.select(
+            data['Flow ID'],
             data['Src IP'],
             data['Dst IP'],
             data['Dst Port'],
@@ -133,24 +144,33 @@ def get_data(data):
             data['Tot Fwd Pkts'],
             data['Tot Bwd Pkts'],
             data['Idle Mean'],
-            data['Flow Byts/s']
+            data['Flow Byts/s'],
+            data['Fwd Header Len'],
+            data['Bwd Header Len']
         # TODO: also the y values
             #(data['id'] % 10).alias('bin'),
         )
 
+def merge(list1, list2):
+      
+    merged_list = [(list1[i], list2[i]) for i in range(0, len(list1))]
+    return merged_list
 
 def organize_by_ping(data):
-    grouped = data.groupBy(data['Src IP'],data['Dst IP'])
+    grouped = data.groupBy(data['Flow ID'])
     groups = grouped.agg(
-        functions.sum(data['Flow Duration']).alias('Flow Duration Sum'),
-        (functions.sum(data['Flow Duration'])/functions.count('*')).alias('Flow Duration Avg'),
-        (functions.sum(data['Tot Fwd Pkts'])).alias('Tot Fwd Pkts sum'),
-        (functions.sum(data['Tot Bwd Pkts'])).alias('Tot Bwd Pkts sum'),
-        (functions.sum(data['Tot Fwd Pkts'])*functions.count('*')).alias('Tot Fwd Pkts avg'),
-        (functions.sum(data['Tot Bwd Pkts'])*functions.count('*')).alias('Tot Bwd Pkts avg'),
-        (functions.sum(data['Idle Mean'])).alias('Idle avg'),
-        (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('Flow Byts/s'),
-        functions.count('*').alias('ping'))
+        functions.sum(data['Flow Duration']).alias('Flow Duration Sum'), #2
+        (functions.sum(data['Flow Duration'])/functions.count('*')).alias('Flow Duration Avg'),#3
+        (functions.sum(data['Tot Fwd Pkts'])).alias('Tot Fwd Pkts sum'), #4
+        (functions.sum(data['Tot Bwd Pkts'])).alias('Tot Bwd Pkts sum'),#3
+        (functions.sum(data['Fwd Header Len'])).alias('Fwd Header Len sum'), #4
+        (functions.sum(data['Bwd Header Len'])).alias('Bwd Header Len sum'), #5
+        (functions.sum(data['Tot Fwd Pkts'])/functions.count('*')).alias('Tot Fwd Pkts avg'),#6
+        (functions.sum(data['Tot Bwd Pkts'])/functions.count('*')).alias('Tot Bwd Pkts avg'),#7
+        (functions.sum(data['Idle Mean'])).alias('Idle avg'), #8
+        (functions.sum(data['Flow Byts/s'])).alias('Flow Byts/s'), #/functions.count('*') #9
+        functions.count('*').alias('ping')) #10
+    
     return groups
     # We know groups has <=10 rows, so it can safely be moved into two partitions.
     #groups = groups.sort(groups['bin']).coalesce(2)
@@ -158,79 +178,53 @@ def organize_by_ping(data):
 def t_test(data_1,data_2):
     return stats.ttest_ind(data_1, data_2)
 
-def generate_graphs(ddos_organized,benign_organized):
-    fruits = ["Src IP", "Dst IP", "Flow Duration Sum","Flow Duration Avg","Tot Fwd Pkts sum","Tot Bwd Pkts sum","Tot Fwd Pkts avg","Tot Bwd Pkts avg","Idle avg","Flow Byts/s"]
-    outter = 0
-    inner = 0
-    for x in fruits:
-        inner = outter+1
-        fruits.pop(0)
-        for y in fruits:
-            X_ddos=ddos_organized.rdd.map(lambda x: x[outter]).collect() # Pings
-            Y_ddos=ddos_organized.rdd.map(lambda x: x[inner]).collect() # Total time
-
-            X_benign=benign_organized.rdd.map(lambda x: x[outter]).collect() # Pings
-            Y_benign=benign_organized.rdd.map(lambda x: x[inner]).collect() # Total time
-            fig = plt.figure()
-            ax1 = fig.add_subplot(111)
-            ax1.set_xlabel(x)
-            ax1.set_ylabel(y)
-            ax1.scatter(X_ddos, Y_ddos, s=10, c='r', marker="s", label='DDOS')
-            ax1.scatter(X_benign,Y_benign, s=10, c='b', marker="o", label='benign')
-            plt.legend(loc='upper left')
-            plt.savefig(str(x)+' vs '+str(y)+'.png')
-        outter+=1  
-
+def machine_leanring(combined_organized,x_1_col,x_2_col,y_1_col):
+    X_1=combined_organized.rdd.map(lambda x: x[x_1_col]).collect() # Pings
+    X_2=combined_organized.rdd.map(lambda x: x[x_2_col]).collect() # Total time
+    Y_1 = combined_organized.rdd.map(lambda x: x[y_1_col]).collect()
+    x_ml= np.stack([X_1,X_2], axis=1)   
+    X_train, X_test, y_train, y_test = train_test_split(x_ml, Y_1)
+    model = make_pipeline(StandardScaler(),KNeighborsClassifier(n_neighbors=10))
+    model.fit(X_train, y_train)
+    return model
+    
 def main(in_directory, out_directory):
     # Read the data from the JSON files
     raw = spark.read.csv(in_directory, schema=schema)
     raw_filtered = get_data(raw)#.show(); #return
-    ddos = raw_filtered.filter(raw.Label=="ddos")
-    benign = raw_filtered.filter(raw.Label!="ddos")
-    ddos_organized = organize_by_ping(ddos).cache()
-    benign_organized = organize_by_ping(benign).cache()
+#     ddos = raw_filtered.filter(raw.Label=="ddos")
+#     benign = raw_filtered.filter(raw.Label!="ddos")
+    combined_organized = organize_by_ping(raw_filtered)
     
-    generate_graphs(ddos_organized,benign_organized)
-    #benign_organized.show()
+    combined_organized = combined_organized.join(
+        raw_filtered,
+        [(combined_organized['Flow ID'] == raw_filtered['Flow ID'])],
+             "left"
+            ).select("Tot Fwd Pkts","Tot Bwd Pkts","Label").cache()
     
-    #ddos_organized.show()
-    #benign_organized.show()
-    
-    
-    
-#     X_ddos=ddos_organized.rdd.map(lambda x: x[3]).collect() # Pings
-#     Y_ddos=ddos_organized.rdd.map(lambda x: x[8]).collect() # Total time
-    
-#     X_benign=benign_organized.rdd.map(lambda x: x[3]).collect() # Pings
-#     Y_benign=benign_organized.rdd.map(lambda x: x[8]).collect() # Total time
-    
-    
-#     fig = plt.figure()
-#     ax1 = fig.add_subplot(111)
-#     ax1.set_xlabel("Flow Duration")
-#     ax1.set_ylabel("Flow Byts/s")
-
-#     ax1.scatter(X_ddos, Y_ddos, s=10, c='r', marker="s", label='DDOS')
-#     ax1.scatter(X_benign,Y_benign, s=10, c='b', marker="o", label='benign')
-#     plt.legend(loc='upper left')
-#     plt.savefig('combined Tot Fwd Pkts vs Tot Bwd Pkts Benign.png')
-    
-    #plt.show()
-
-  #     print("t-test: btn Pings")
-#     print(t_test(X_ddos,X_benign))
-    
-#     print("t-test: btn Total time")
-#     print(t_test(Y_ddos,Y_benign))
-    #groups = groups.sort(groups['bin']).coalesce(2)
-    #groups.write.csv(out_directory, compression=None, mode='overwrite')
-
-
-# In[ ]:
-
+    x_1_col = 0 
+    x_2_col = 1
+    y_1_col = 2
+    X_1=combined_organized.rdd.map(lambda x: x[x_1_col]).collect() # Pings
+    X_2=combined_organized.rdd.map(lambda x: x[x_2_col]).collect() # Total time
+    Y_1 = combined_organized.rdd.map(lambda x: x[y_1_col]).collect()
+    x_ml= np.stack([X_1,X_2], axis=1)   
+    X_train, X_test, y_train, y_test = train_test_split(x_ml, Y_1)
+    model = make_pipeline(StandardScaler(),KNeighborsClassifier(n_neighbors=10))
+    model.fit(X_train, y_train)
+    N = 4000
+    y_test_trim = (y_test[0:N])
+    predictions = (model.predict(X_test[:N, :]))
+    touple_temp = (merge(y_test_trim,predictions))
+    print("Score :", model.score(X_test[:N, :], y_test_trim))
+    rdd = spark.sparkContext.parallelize(touple_temp)
+    sparkDF=spark.createDataFrame(rdd,output_schema)
+    sparkDF.write.csv(out_directory, compression=None, mode='overwrite')
+    print("+++++++++++++++++++++ done +++++++++++++++++++++")
 
 if __name__=='__main__':
     in_directory = sys.argv[1]
     out_directory = sys.argv[2]
+    #file = sys.argv[3]
     main(in_directory, out_directory)
 
