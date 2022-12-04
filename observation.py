@@ -1,21 +1,19 @@
 import sys
 from pyspark.sql import SparkSession, functions, types
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import re
+# import re
 import time
 from datetime import datetime
-from statsmodels.nonparametric.smoothers_lowess import lowess
-from pykalman import KalmanFilter
 from pyspark.sql import Row
 from pyspark.sql.functions import col, unix_timestamp, round, lit
 import itertools
-from scipy import stats
-from scipy.stats import mannwhitneyu
 
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import MinMaxScaler
 
 spark = SparkSession.builder.appName('first Spark app').getOrCreate()
 spark.sparkContext.setLogLevel('WARN')
@@ -34,8 +32,8 @@ schema = types.StructType([
     types.StructField('Protocol', types.StringType()),
     types.StructField('Timestamp', types.StringType()),
     types.StructField('Flow Duration', types.IntegerType()),
-    types.StructField('Tot Fwd Pkts', types.StringType()),
-    types.StructField('Tot Bwd Pkts', types.StringType()),
+    types.StructField('Tot Fwd Pkts', types.IntegerType()),
+    types.StructField('Tot Bwd Pkts', types.IntegerType()),
     types.StructField('TotLen Fwd Pkts', types.StringType()),
     types.StructField('TotLen Bwd Pkts', types.StringType()),
     types.StructField('Fwd Pkt Len Max', types.StringType()),
@@ -46,7 +44,7 @@ schema = types.StructType([
     types.StructField('Bwd Pkt Len Min', types.StringType()),
     types.StructField('Bwd Pkt Len Mean', types.StringType()),
     types.StructField('Bwd Pkt Len Std', types.StringType()),
-    types.StructField('Flow Byts/s', types.StringType()),
+    types.StructField('Flow Byts/s', types.DoubleType()),
     types.StructField('Flow Pkts/s', types.StringType()),
     types.StructField('Flow IAT Mean', types.StringType()),
     types.StructField('Flow IAT Std', types.StringType()),
@@ -84,7 +82,7 @@ schema = types.StructType([
     types.StructField('CWE Flag Count', types.StringType()),
     types.StructField('ECE Flag Cnt', types.StringType()),
     types.StructField('Down/Up Ratio', types.StringType()),
-    types.StructField('Pkt Size Avg', types.FloatType()),
+    types.StructField('Pkt Size Avg', types.DoubleType()),
     types.StructField('Fwd Seg Size Avg', types.StringType()),
     types.StructField('Bwd Seg Size Avg', types.StringType()),
     types.StructField('Fwd Byts/b Avg', types.StringType()),
@@ -105,7 +103,7 @@ schema = types.StructType([
     types.StructField('Active Std', types.StringType()),
     types.StructField('Active Max', types.StringType()),
     types.StructField('Active Min', types.StringType()),
-    types.StructField('Idle Mean', types.StringType()),
+    types.StructField('Idle Mean', types.DoubleType()),
     types.StructField('Idle Std', types.StringType()),
     types.StructField('Idle Max', types.StringType()),
     types.StructField('Idle Min', types.StringType()),
@@ -150,39 +148,57 @@ def organize_by_ping(data):
     return groups
 
 
-def get_feature_scores(df_bening, X, Y):
-    x1 = df1.select(X_first).rdd.flatMap(lambda x: x).collect() + df2.select(X_first).rdd.flatMap(lambda x: x).collect()
-    x2 = df1.select(X_second).rdd.flatMap(lambda x: x).collect() + df1.select(X_second).rdd.flatMap(lambda x: x).collect()
-    y = df1.select(Y).rdd.flatMap(lambda x: x).collect() + df2.select(Y).rdd.flatMap(lambda x: x).collect()
-    x = np.stack([x1, x2], axis=1)
-    
-    X_train, X_valid, y_train, y_valid = train_test_split(x, y)
-    model = KNeighborsClassifier(n_neighbors=5)
+def get_feature_scores(df, features):
+    Y = df['Label']
+    X = df.drop("Label", axis=1).values
+    X_train, X_valid, y_train, y_valid = train_test_split(X, Y)
+    # print(np.any(np.isnan(Y)))
+    # print(np.all(np.isfinite(X)))
+    print(np.any(np.isnan(X_train)))
+    print(np.all(np.isfinite(X_train)))
+    model = make_pipeline( MinMaxScaler(), 
+                            KNeighborsClassifier(n_neighbors=5)
+                        )
     model.fit(X_train, y_train)
     print(model.score(X_train, y_train))
     print(model.score(X_valid, y_valid))
 
 
+
+    #cleans and balances data with one to one ratio
 def balance_data(df_bening, df_ddos):
     count_ddos = df_ddos.count()
     count_benign = df_bening.count()
     min_len = min(count_benign, count_ddos)
+    min_len = 100000
     balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
-    return balanced
+    balanced = balanced.drop('Src IP','Dst IP', 'Timestamp')
+    assessment_map = {"Benign": 0, "ddos": 1}
+    pd_df = balanced.toPandas()
+    pd_df['Label'] = pd_df['Label'].map(assessment_map)
+
+    #there are some infinite values in data (for Flow Bytes/s to be exact)
+    pd_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df = pd_df.dropna()
+    print(pd_df[pd_df == np.inf].count())
+    return pd_df
 
 
 def main(in_directory, out_directory):
     # Read the data from the JSON files
     raw = spark.read.csv(in_directory, schema=schema)
     raw_filtered = get_data(raw)#.show(); #return
-    ddos = raw_filtered.filter(raw.Label=="ddos")
-    benign = raw_filtered.filter(raw.Label!="ddos")
+    ddos = raw_filtered.filter(raw_filtered.Label=="ddos")
+    benign = raw_filtered.filter(raw_filtered.Label!="ddos")
 
     # ddos_organized = organize_by_ping(ddos).cache()
     # benign_organized = organize_by_ping(benign).cache()
 
-    balanced = balance_data(ddos, benign)
-    balanced.show()
+    balanced_data = balance_data(ddos, benign)
+    included_features = "*"
+    # get_model()
+    print(balanced_data)
+    get_feature_scores(balanced_data, included_features)
     # get_feature_scores('Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
     
 if __name__=='__main__':
