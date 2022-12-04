@@ -126,7 +126,8 @@ def get_data(data):
             data['Tot Fwd Pkts'],
             data['Tot Bwd Pkts'],
             data['Idle Mean'],
-            data['Flow Byts/s']
+            data['Flow Byts/s'],
+            (data['Fwd Pkt Len Mean'] / data['Bwd Pkt Len Mean']).alias("Fwd Bwd size ratio")
         # TODO: also the y values
             #(data['id'] % 10).alias('bin'),
         )
@@ -142,18 +143,19 @@ def organize_by_ping(data):
         (functions.sum(data['Tot Fwd Pkts'])*functions.count('*')).alias('Tot Fwd Pkts avg'),
         (functions.sum(data['Tot Bwd Pkts'])*functions.count('*')).alias('Tot Bwd Pkts avg'),
         (functions.sum(data['Idle Mean'])).alias('Idle avg'),
-        (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('Flow Byts/s'),
-        (functions.sum(data['Flow Byts/s'])).alias('Flow Byts/s avg'),
+        (functions.sum(data['Flow Byts/s'])).alias('Sum Flow Byts/s'),
+        (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('avg Flow Byts/s'),
+        (functions.avg(data['Fwd Bwd size ratio'])).alias('avg Fwd Bwd size ratio'),
         functions.count('*').alias('ping'))
+        #ratio
     return groups
 
 
 def get_feature_scores(df, features):
+    print(df)
     Y = df['Label']
     X = df.drop("Label", axis=1).values
     X_train, X_valid, y_train, y_valid = train_test_split(X, Y)
-    # print(np.any(np.isnan(Y)))
-    # print(np.all(np.isfinite(X)))
     print(np.any(np.isnan(X_train)))
     print(np.all(np.isfinite(X_train)))
     model = make_pipeline( MinMaxScaler(), 
@@ -169,8 +171,8 @@ def get_feature_scores(df, features):
 def balance_data(df_bening, df_ddos):
     count_ddos = df_ddos.count()
     count_benign = df_bening.count()
-    min_len = min(count_benign, count_ddos)
-    min_len = 100000
+    min_len = min(count_benign, count_ddos, 100000)
+    print(min_len)
     balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
     balanced = balanced.drop('Src IP','Dst IP', 'Timestamp')
     assessment_map = {"Benign": 0, "ddos": 1}
@@ -180,24 +182,22 @@ def balance_data(df_bening, df_ddos):
     #there are some infinite values in data (for Flow Bytes/s to be exact)
     pd_df.replace([np.inf, -np.inf], np.nan, inplace=True)
     pd_df = pd_df.dropna()
-    print(pd_df[pd_df == np.inf].count())
+    # print(pd_df[pd_df == np.inf].count())
     return pd_df
-
 
 def main(in_directory, out_directory):
     # Read the data from the JSON files
     raw = spark.read.csv(in_directory, schema=schema)
-    raw_filtered = get_data(raw)#.show(); #return
+    raw_filtered = get_data(raw).cache()
     ddos = raw_filtered.filter(raw_filtered.Label=="ddos")
     benign = raw_filtered.filter(raw_filtered.Label!="ddos")
 
-    # ddos_organized = organize_by_ping(ddos).cache()
-    # benign_organized = organize_by_ping(benign).cache()
-
-    balanced_data = balance_data(ddos, benign)
+    ddos_organized = organize_by_ping(ddos).cache()
+    benign_organized = organize_by_ping(benign).cache()
+    print(ddos_organized.dtypes)
+    balanced_data = balance_data(ddos_organized, benign_organized)
     included_features = "*"
     # get_model()
-    print(balanced_data)
     get_feature_scores(balanced_data, included_features)
     # get_feature_scores('Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
     
