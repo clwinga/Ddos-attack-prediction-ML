@@ -150,8 +150,7 @@ def organize_by_ping(data):
     return groups
 
 
-def get_feature_scores(df1, df2, X_first, X_second, Y):
-
+def get_feature_scores(df_bening, X, Y):
     x1 = df1.select(X_first).rdd.flatMap(lambda x: x).collect() + df2.select(X_first).rdd.flatMap(lambda x: x).collect()
     x2 = df1.select(X_second).rdd.flatMap(lambda x: x).collect() + df1.select(X_second).rdd.flatMap(lambda x: x).collect()
     y = df1.select(Y).rdd.flatMap(lambda x: x).collect() + df2.select(Y).rdd.flatMap(lambda x: x).collect()
@@ -164,21 +163,27 @@ def get_feature_scores(df1, df2, X_first, X_second, Y):
     print(model.score(X_valid, y_valid))
 
 
+def balance_data(df_bening, df_ddos):
+    count_ddos = df_ddos.count()
+    count_benign = df_bening.count()
+    min_len = min(count_benign, count_ddos)
+    balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
+    return balanced
+
+
 def main(in_directory, out_directory):
     # Read the data from the JSON files
     raw = spark.read.csv(in_directory, schema=schema)
     raw_filtered = get_data(raw)#.show(); #return
     ddos = raw_filtered.filter(raw.Label=="ddos")
     benign = raw_filtered.filter(raw.Label!="ddos")
-    ddos_organized = organize_by_ping(ddos).cache()
-    benign_organized = organize_by_ping(benign).cache()
 
-    raw_orgranized = organize_by_ping(raw_filtered)
+    # ddos_organized = organize_by_ping(ddos).cache()
+    # benign_organized = organize_by_ping(benign).cache()
 
-    size_ddos = ddos_organized.count()
-    limited_bening = benign_organized.limit(size_ddos)
-
-    get_feature_scores(limited_bening, ddos_organized, 'Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
+    balanced = balance_data(ddos, benign)
+    balanced.show()
+    # get_feature_scores('Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
     
 if __name__=='__main__':
     in_directory = sys.argv[1]
