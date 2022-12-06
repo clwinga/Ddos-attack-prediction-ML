@@ -158,7 +158,7 @@ def get_model():
     )
     return model
 
-def get_feature_scores(df, features):
+def get_feature_scores(df):
     Y = df['Label']
     X = df.drop("Label", axis=1).values
     X_train, X_valid, y_train, y_valid = train_test_split(X, Y)
@@ -195,11 +195,10 @@ def main(in_directory, out_directory):
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
     balanced_data = balance_and_clean_df(ddos_organized, benign_organized)
-    get_feature_scores(balanced_data, included_features)
+    get_feature_scores(balanced_data)
     print("+++++++++++++++++++++ done +++++++++++++++++++++")
 
 if __name__=='__main__':
     in_directory = sys.argv[1]
     out_directory = sys.argv[2]
-    #file = sys.argv[3]
     main(in_directory, out_directory)
