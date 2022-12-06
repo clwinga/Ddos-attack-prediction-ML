@@ -108,12 +108,13 @@ def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
 def get_data(data):
+    timestamp_min_udf = functions.udf(convert_string_to_datetime,returnType=types.TimestampType())
     return data.select(
             data['Flow ID'],
             data['Src IP'],
             data['Dst IP'],
             data['Dst Port'],
-            data['Timestamp'],
+            functions.date_trunc("minute",timestamp_min_udf(functions.regexp_replace(functions.regexp_replace(data['Timestamp'], " AM", ""), " PM", ""))).alias('Timestamp'),
             data['Flow Duration'],
             data['Pkt Size Avg'],
             data['Label'],
@@ -121,7 +122,7 @@ def get_data(data):
             data['Tot Bwd Pkts'],
             data['Idle Mean'],
             data['Flow Byts/s'],
-            (data['Fwd Pkt Len Mean'] / data['Bwd Pkt Len Mean']).alias("Fwd Bwd size ratio")
+            (data['Fwd Pkt Len Mean'] / data['Bwd Pkt Len Mean']).alias("Fwd Bwd size ratio"),
             data['Fwd Header Len'],
             data['Bwd Header Len']
         # TODO: also the y values
@@ -155,7 +156,7 @@ def get_model():
         MinMaxScaler(), 
         KNeighborsClassifier(n_neighbors=5)
     )
-    reutrn model
+    return model
 
 def get_feature_scores(df, features):
     Y = df['Label']
