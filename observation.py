@@ -3,13 +3,7 @@ from pyspark.sql import SparkSession, functions, types
 # import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-# import re
-import time
 from datetime import datetime
-from pyspark.sql import Row
-from pyspark.sql.functions import col, unix_timestamp, round, lit
-import itertools
-
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
@@ -20,7 +14,6 @@ spark.sparkContext.setLogLevel('WARN')
 
 assert sys.version_info >= (3, 8) # make sure we have Python 3.8+
 assert spark.version >= '3.2' # make sure we have Spark 3.2+
-
 
 schema = types.StructType([
     types.StructField('Unnamed: 0', types.StringType()),
@@ -146,33 +139,35 @@ def organize_by_ping(data):
         (functions.sum(data['Flow Byts/s'])).alias('Sum Flow Byts/s'),
         (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('avg Flow Byts/s'),
         (functions.avg(data['Fwd Bwd size ratio'])).alias('avg Fwd Bwd size ratio'),
-        functions.count('*').alias('ping'))
+        functions.count('*').alias('ping')
+        )
         #ratio
     return groups
 
 
+def get_model():
+    model = make_pipeline( 
+        MinMaxScaler(), 
+        KNeighborsClassifier(n_neighbors=5)
+    )
+    reutrn model
+
 def get_feature_scores(df, features):
-    print(df)
     Y = df['Label']
     X = df.drop("Label", axis=1).values
     X_train, X_valid, y_train, y_valid = train_test_split(X, Y)
-    print(np.any(np.isnan(X_train)))
-    print(np.all(np.isfinite(X_train)))
-    model = make_pipeline( MinMaxScaler(), 
-                            KNeighborsClassifier(n_neighbors=5)
-                        )
+    assert np.any(np.isnan(X_train)) == False
+    assert np.all(np.isfinite(X_train)) == True
+    model = get_model()
     model.fit(X_train, y_train)
     print(model.score(X_train, y_train))
     print(model.score(X_valid, y_valid))
 
-
-
     #cleans and balances data with one to one ratio
-def balance_data(df_bening, df_ddos):
+def balance_and_clean_df(df_bening, df_ddos):
     count_ddos = df_ddos.count()
     count_benign = df_bening.count()
     min_len = min(count_benign, count_ddos, 100000)
-    print(min_len)
     balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
     balanced = balanced.drop('Src IP','Dst IP', 'Timestamp')
     assessment_map = {"Benign": 0, "ddos": 1}
@@ -182,7 +177,6 @@ def balance_data(df_bening, df_ddos):
     #there are some infinite values in data (for Flow Bytes/s to be exact)
     pd_df.replace([np.inf, -np.inf], np.nan, inplace=True)
     pd_df = pd_df.dropna()
-    # print(pd_df[pd_df == np.inf].count())
     return pd_df
 
 def main(in_directory, out_directory):
@@ -194,12 +188,8 @@ def main(in_directory, out_directory):
 
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
-    print(ddos_organized.dtypes)
-    balanced_data = balance_data(ddos_organized, benign_organized)
-    included_features = "*"
-    # get_model()
+    balanced_data = balance_and_clean_df(ddos_organized, benign_organized)
     get_feature_scores(balanced_data, included_features)
-    # get_feature_scores('Tot Fwd Pkts avg', 'Tot Bwd Pkts avg', 'Label')
     
 if __name__=='__main__':
     in_directory = sys.argv[1]
