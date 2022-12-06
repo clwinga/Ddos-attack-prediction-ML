@@ -135,7 +135,7 @@ def merge(list1, list2):
     return merged_list
 
 def organize_by_ping(data):
-    grouped = data.groupBy(data['Src IP'],data['Dst IP'], data['Label'])
+    grouped = data.groupBy(data['Src IP'],data['Dst IP'],data['Timestamp'], data['Label'])
     groups = grouped.agg(
         functions.sum(data['Flow Duration']).alias('Flow Duration Sum'),
         (functions.sum(data['Flow Duration'])/functions.count('*')).alias('Flow Duration Avg'),
@@ -194,6 +194,7 @@ def main(in_directory, out_directory):
 
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
+    benign_organized.show()
     balanced_data = balance_and_clean_df(ddos_organized, benign_organized)
     get_feature_scores(balanced_data)
     print("+++++++++++++++++++++ done +++++++++++++++++++++")
