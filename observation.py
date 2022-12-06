@@ -8,6 +8,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
 spark = SparkSession.builder.appName('first Spark app').getOrCreate()
 spark.sparkContext.setLogLevel('WARN')
@@ -103,12 +104,12 @@ schema = types.StructType([
     types.StructField('Label', types.StringType())
 ])
 
-
 def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
 def get_data(data):
     return data.select(
+            data['Flow ID'],
             data['Src IP'],
             data['Dst IP'],
             data['Dst Port'],
@@ -121,10 +122,16 @@ def get_data(data):
             data['Idle Mean'],
             data['Flow Byts/s'],
             (data['Fwd Pkt Len Mean'] / data['Bwd Pkt Len Mean']).alias("Fwd Bwd size ratio")
+            data['Fwd Header Len'],
+            data['Bwd Header Len']
         # TODO: also the y values
             #(data['id'] % 10).alias('bin'),
         )
 
+def merge(list1, list2):
+      
+    merged_list = [(list1[i], list2[i]) for i in range(0, len(list1))]
+    return merged_list
 
 def organize_by_ping(data):
     grouped = data.groupBy(data['Src IP'],data['Dst IP'], data['Label'])
@@ -141,9 +148,7 @@ def organize_by_ping(data):
         (functions.avg(data['Fwd Bwd size ratio'])).alias('avg Fwd Bwd size ratio'),
         functions.count('*').alias('ping')
         )
-        #ratio
     return groups
-
 
 def get_model():
     model = make_pipeline( 
@@ -190,8 +195,10 @@ def main(in_directory, out_directory):
     benign_organized = organize_by_ping(benign).cache()
     balanced_data = balance_and_clean_df(ddos_organized, benign_organized)
     get_feature_scores(balanced_data, included_features)
-    
+    print("+++++++++++++++++++++ done +++++++++++++++++++++")
+
 if __name__=='__main__':
     in_directory = sys.argv[1]
     out_directory = sys.argv[2]
+    #file = sys.argv[3]
     main(in_directory, out_directory)
