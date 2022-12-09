@@ -176,13 +176,18 @@ def get_feature_scores(df):
 
     #cleans and balances data with one to one ratio
 def balance_and_clean_df(df_bening, df_ddos,count):
-    count_ddos = 3496
+    df_bening = df_bening.replace([np.inf, -np.inf], np.nan)
+    df_ddos = df_ddos.replace([np.inf, -np.inf], np.nan)
+    df_bening = df_bening.dropna()
+    df_ddos = df_ddos.dropna()
+#     we did the count and hard coded it to save time. feel free to change it
+#     count_ddos = df_ddos.count()
+#     count_benign = df_bening.count()
+    count_ddos = 3496 
     count_benign = 2688115
     min_len = min(count_benign, count_ddos, count)
     balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
     balanced = balanced.drop('Src IP','Dst IP', 'Timestamp')
-    balanced.replace([np.inf, -np.inf], np.nan)#, inplace=True)
-    balanced = balanced.na.drop()
     return balanced
 
 def clean_df(combined):
