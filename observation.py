@@ -1,6 +1,6 @@
 import sys
 from pyspark.sql import SparkSession, functions, types
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -107,6 +107,13 @@ schema = types.StructType([
 def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
+def create_plot(df_balanced, feature1, feature2):
+    ddos = df_balanced[df_balanced['Label'] == 1]
+    benign = df_balanced[df_balanced['Label'] == 0]
+    plt.scatter(ddos[feature1], ddos[feature2], c='r')
+    plt.scatter(benign[feature1], benign[feature2], c='b')
+    plt.show()
+    
 def get_data(data):
     timestamp_min_udf = functions.udf(convert_string_to_datetime,returnType=types.TimestampType())
     return data.select(
