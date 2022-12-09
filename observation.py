@@ -141,8 +141,6 @@ def organize_by_ping(data):
         (functions.sum(data['Flow Duration'])/functions.count('*')).alias('Flow Duration Avg'),
         (functions.sum(data['Tot Fwd Pkts'])).alias('Tot Fwd Pkts sum'),
         (functions.sum(data['Tot Bwd Pkts'])).alias('Tot Bwd Pkts sum'),
-        (functions.sum(data['Tot Fwd Pkts'])*functions.count('*')).alias('Tot Fwd Pkts avg'),
-        (functions.sum(data['Tot Bwd Pkts'])*functions.count('*')).alias('Tot Bwd Pkts avg'),
         (functions.sum(data['Idle Mean'])).alias('Idle avg'),
         (functions.sum(data['Flow Byts/s'])).alias('Sum Flow Byts/s'),
         (functions.sum(data['Flow Byts/s'])/functions.count('*')).alias('avg Flow Byts/s'),
@@ -170,36 +168,53 @@ def get_feature_scores(df):
     print(model.score(X_valid, y_valid))
 
     #cleans and balances data with one to one ratio
-def balance_and_clean_df(df_bening, df_ddos):
-    count_ddos = df_ddos.count()
-    count_benign = df_bening.count()
-    min_len = min(count_benign, count_ddos, 100000)
+def balance_and_clean_df(df_bening, df_ddos,count):
+    count_ddos = 3496
+    count_benign = 2688115
+    min_len = min(count_benign, count_ddos, count)
     balanced = df_bening.limit(min_len).union(df_ddos.limit(min_len))
     balanced = balanced.drop('Src IP','Dst IP', 'Timestamp')
-    assessment_map = {"Benign": 0, "ddos": 1}
-    pd_df = balanced.toPandas()
-    pd_df['Label'] = pd_df['Label'].map(assessment_map)
+    balanced.replace([np.inf, -np.inf], np.nan)#, inplace=True)
+    balanced = balanced.na.drop()
+    return balanced
 
-    #there are some infinite values in data (for Flow Bytes/s to be exact)
-    pd_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    pd_df = pd_df.dropna()
-    return pd_df
+def clean_df(combined):
+    combined = combined.drop('Src IP','Dst IP', 'Timestamp')
+    combined.replace([np.inf, -np.inf], np.nan)#, inplace=True)
+    combined = combined.na.drop()
+    return combined
 
-def main(in_directory, out_directory):
+def main(in_directory, count):
     # Read the data from the JSON files
     raw = spark.read.csv(in_directory, schema=schema)
-    raw_filtered = get_data(raw).cache()
+    raw_filtered = get_data(raw)#.cache()
     ddos = raw_filtered.filter(raw_filtered.Label=="ddos")
     benign = raw_filtered.filter(raw_filtered.Label!="ddos")
-
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
-    benign_organized.show()
-    balanced_data = balance_and_clean_df(ddos_organized, benign_organized)
-    get_feature_scores(balanced_data)
+    combined_organized = balance_and_clean_df(ddos_organized, benign_organized, count)
+    combined_organized = combined_organized.select("Tot Fwd Pkts sum","Tot Bwd Pkts sum","Flow Duration Sum","ping","Label")#.cache()
+    combined_organized.select("Label").distinct().show()
+    x_1_col = 0
+    x_2_col = 1
+    x_3_col = 2
+    x_4_col = 3
+    y_1_col = 4
+    X_1=combined_organized.rdd.map(lambda x: x[x_1_col]).collect() #
+    X_2=combined_organized.rdd.map(lambda x: x[x_2_col]).collect() #
+    X_3=combined_organized.rdd.map(lambda x: x[x_3_col]).collect() #
+    X_4=combined_organized.rdd.map(lambda x: x[x_4_col]).collect() #
+    Y_1 = combined_organized.rdd.map(lambda x: x[y_1_col]).collect() #
+    x_ml= np.stack([X_1,X_2,X_3,X_4], axis=1)   
+    X_train, X_test, y_train, y_test = train_test_split(x_ml, Y_1)
+    model = make_pipeline(StandardScaler(),KNeighborsClassifier(n_neighbors=10))
+    model.fit(X_train, y_train)
+    y_test_trim = (y_test)
+    print("Score :", model.score(X_test, y_test_trim))
     print("+++++++++++++++++++++ done +++++++++++++++++++++")
+    
 
 if __name__=='__main__':
     in_directory = sys.argv[1]
-    out_directory = sys.argv[2]
-    main(in_directory, out_directory)
+    count = int(sys.argv[2])
+    main(in_directory, count)
