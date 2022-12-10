@@ -108,10 +108,14 @@ def convert_string_to_datetime(dt_string):
     return datetime.strptime(dt_string, "%d/%m/%Y %I:%M:%S")
 
 def create_plot(df_balanced, feature1, feature2):
-    ddos = df_balanced[df_balanced['Label'] == 1]
-    benign = df_balanced[df_balanced['Label'] == 0]
-    plt.scatter(ddos[feature1], ddos[feature2], c='r')
-    plt.scatter(benign[feature1], benign[feature2], c='b')
+    ddos = df_balanced[df_balanced['Label'] == "ddos"]
+    benign = df_balanced[df_balanced['Label'] != "ddos"]
+    ddos_x = ddos.select(feature1).rdd.flatMap(lambda x: x).collect()
+    ddos_y = ddos.select(feature2).rdd.flatMap(lambda x: x).collect()
+    benign_x = benign.select(feature1).rdd.flatMap(lambda x: x).collect()
+    benign_y = benign.select(feature2).rdd.flatMap(lambda x: x).collect()
+    plt.scatter(ddos_x, ddos_y, c='r')
+    plt.scatter(benign_x, benign_y, c='b')
     plt.show()
     
 def get_data(data):
@@ -205,6 +209,7 @@ def main(in_directory, count):
     ddos_organized = organize_by_ping(ddos).cache()
     benign_organized = organize_by_ping(benign).cache()
     combined_organized = balance_and_clean_df(ddos_organized, benign_organized, count)
+    create_plot(combined_organized, "Tot Fwd Pkts sum","Tot Bwd Pkts sum")
     combined_organized = combined_organized.select("Tot Fwd Pkts sum","Tot Bwd Pkts sum","Flow Duration Sum","ping","Label")#.cache()
     combined_organized.select("Label").distinct().show()
     x_1_col = 0
